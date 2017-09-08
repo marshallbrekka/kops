@@ -25,10 +25,15 @@ import (
 	"time"
 )
 
+type KVStateWrapper struct {
+	KVState
+	mtx sync.RWMutex
+}
+
 // state is an implementation of a LWW map
 type state struct {
 	mtx  sync.RWMutex
-	data KVState
+	data KVStateWrapper
 	self mesh.PeerName
 
 	lastSnapshot *gossip.GossipStateSnapshot
@@ -146,15 +151,15 @@ func (s *state) updateValues(removeKeys []string, putEntries map[string]string) 
 }
 
 // getData returns a copy of our data, suitable for gossiping
-func (s *state) getData() *KVState {
+func (s *state) getData() *KVStateWrapper {
 	s.mtx.RLock()
 	defer s.mtx.RUnlock()
-	d := &KVState{}
+	d := &KVStateWrapper{}
 	*d = s.data
 	return d
 }
 
-func (s *state) merge(message *KVState, changes *KVState) {
+func (s *state) merge(message *KVStateWrapper, changes *KVStateWrapper) {
 	s.mtx.Lock()
 	defer s.mtx.Unlock()
 
@@ -165,17 +170,25 @@ func (s *state) merge(message *KVState, changes *KVState) {
 	}
 }
 
-var _ mesh.GossipData = &KVState{}
+var _ mesh.GossipData = &KVStateWrapper{}
 
-func mergeKVState(dest *KVState, src *KVState, changes *KVState) bool {
+func mergeKVState(dest *KVStateWrapper, src *KVStateWrapper, changes *KVStateWrapper) bool {
+	dest.mtx.Lock()
+	defer dest.mtx.Unlock()
+
 	changed := false
 
 	if dest.Records == nil {
 		dest.Records = make(map[string]*KVStateRecord)
 	}
 
-	if changes != nil && changes.Records == nil {
-		changes.Records = make(map[string]*KVStateRecord)
+	if changes != nil {
+		changes.mtx.Lock()
+		defer changes.mtx.Unlock()
+
+		if changes.Records == nil {
+			changes.Records = make(map[string]*KVStateRecord)
+		}
 	}
 
 	for k, update := range src.Records {
@@ -199,7 +212,10 @@ func mergeKVState(dest *KVState, src *KVState, changes *KVState) bool {
 // Encode serializes our complete state to a slice of byte-slices.
 // In this simple example, we use a single gob-encoded
 // buffer: see https://golang.org/pkg/encoding/gob/
-func (s *KVState) Encode() [][]byte {
+func (s *KVStateWrapper) Encode() [][]byte {
+	s.mtx.RLock()
+	defer s.mtx.RUnlock()
+
 	data, err := proto.Marshal(s)
 	if err != nil {
 		panic(fmt.Sprintf("error encoding gossip state: %v", err))
@@ -207,8 +223,8 @@ func (s *KVState) Encode() [][]byte {
 	return [][]byte{data}
 }
 
-func DecodeKVState(data []byte) (*KVState, error) {
-	state := &KVState{}
+func DecodeKVState(data []byte) (*KVStateWrapper, error) {
+	state := &KVStateWrapper{}
 	err := proto.Unmarshal(data, state)
 	if err != nil {
 		return nil, fmt.Errorf("error decoding gossip state: %v", err)
@@ -218,8 +234,8 @@ func DecodeKVState(data []byte) (*KVState, error) {
 
 // Merge merges the other GossipData into this one,
 // and returns our resulting, complete state.
-func (s *KVState) Merge(other mesh.GossipData) (complete mesh.GossipData) {
-	otherState := other.(*KVState)
+func (s *KVStateWrapper) Merge(other mesh.GossipData) (complete mesh.GossipData) {
+	otherState := other.(*KVStateWrapper)
 
 	mergeKVState(s, otherState, nil)
 

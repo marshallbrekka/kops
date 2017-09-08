@@ -107,7 +107,7 @@ func (p *peer) OnGossip(buf []byte) (delta mesh.GossipData, err error) {
 		return nil, err
 	}
 
-	deltas := &KVState{}
+	deltas := &KVStateWrapper{}
 	p.st.merge(message, deltas)
 
 	if len(deltas.Records) == 0 {
@@ -129,7 +129,7 @@ func (p *peer) OnGossipBroadcast(src mesh.PeerName, buf []byte) (received mesh.G
 		return nil, err
 	}
 
-	deltas := &KVState{}
+	deltas := &KVStateWrapper{}
 	p.st.merge(message, deltas)
 
 	glog.V(4).Infof("OnGossipBroadcast %s %v => delta %v", src, message, deltas)
